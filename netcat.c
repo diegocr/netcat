@@ -30,6 +30,11 @@
 	backend progs to grab a pty and look like a real telnetd?!
 */
 
+#ifdef __MINGW32__
+#include <_mingw.h>
+#include <winsock2.h>
+#endif
+
 #include "generic.h"		/* same as with L5, skey, etc */
 
 #ifdef WIN32
@@ -37,10 +42,10 @@
 #endif
 
 /* conditional includes -- a very messy section: */
-/* #undef _POSIX_SOURCE		/* might need this for something? */
+// #undef _POSIX_SOURCE		/* might need this for something? */
 #define HAVE_BIND		/* XXX -- for now, see below... */
 #define HAVE_HELP		/* undefine if you dont want the help text */
-/* #define ANAL			/* if you want case-sensitive DNS matching */
+// #define ANAL			/* if you want case-sensitive DNS matching */
 #ifdef HAVE_STDLIB_H
 #include <stdlib.h>
 #else
@@ -87,35 +92,24 @@
 /* includes: */
 
 #ifdef WIN32
-#include "getopt.h"
-// #define sleep			_sleep
-#define sleep(_x)		Sleep((_x)*1000) // sleep is now deprecated [diegocr]
-#define strcasecmp		strcmpi
-#define EADDRINUSE		WSAEADDRINUSE
-#define ETIMEDOUT		WSAETIMEDOUT
-#define ECONNREFUSED	WSAECONNREFUSED
-#endif
-
-#ifndef WIN32
-#include <sys/time.h>		/* timeval, time_t */
+# include <time.h>
+# include <fcntl.h>
+# include <io.h>
+# include <conio.h>
+# include "getopt.h"
+# define sleep(_x)		Sleep((_x)*1000)
+# define EADDRINUSE		WSAEADDRINUSE
+# define ETIMEDOUT		WSAETIMEDOUT
+# define ECONNREFUSED	WSAECONNREFUSED
 #else
-#include <time.h>
-#endif
-
-#include <setjmp.h>		/* jmp_buf et al */
-
-#ifndef WIN32
-#include <sys/socket.h>		/* basics, SO_ and AF_ defs, sockaddr, ... */
-#include <netinet/in.h>		/* sockaddr_in, htons, in_addr */
-#include <netinet/in_systm.h>	/* misc crud that netinet/ip.h references */
-#include <netinet/ip.h>		/* IPOPT_LSRR, header stuff */
-#include <netdb.h>		/* hostent, gethostby*, getservby* */
-#include <arpa/inet.h>		/* inet_ntoa */
-#else
-#include <fcntl.h>
-#include <io.h>
-#include <conio.h>
-//#include <winsock2.h>
+# include <sys/time.h>          /* timeval, time_t */
+# include <setjmp.h>            /* jmp_buf et al */
+# include <sys/socket.h>        /* basics, SO_ and AF_ defs, sockaddr, ... */
+# include <netinet/in.h>        /* sockaddr_in, htons, in_addr */
+# include <netinet/in_systm.h>  /* misc crud that netinet/ip.h references */
+# include <netinet/ip.h>        /* IPOPT_LSRR, header stuff */
+# include <netdb.h>             /* hostent, gethostby*, getservby* */
+# include <arpa/inet.h>         /* inet_ntoa */
 #endif
 
 #include <stdio.h>
@@ -154,10 +148,8 @@ struct port_poop {
 #define PINF struct port_poop
 
 /* globals: */
-jmp_buf jbuf;			/* timer crud */
-int jval = 0;			/* timer crud */
-int netfd = -1;
-int ofd = 0;			/* hexdump output fd */
+static int netfd = -1;
+static int ofd = 0;			/* hexdump output fd */
 static char unknown[] = "(UNKNOWN)";
 static char p_tcp[] = "tcp";	/* for getservby* */
 static char p_udp[] = "udp";
@@ -167,45 +159,48 @@ static char p_udp[] = "udp";
 extern int h_errno;
 #endif
 #endif
-int gatesidx = 0;		/* LSRR hop count */
-int gatesptr = 4;		/* initial LSRR pointer, settable */
-USHORT Single = 1;		/* zero if scanning */
-unsigned int insaved = 0;	/* stdin-buffer size for multi-mode */
-unsigned int wrote_out = 0;	/* total stdout bytes */
-unsigned int wrote_net = 0;	/* total net bytes */
+static int gatesidx = 0;		/* LSRR hop count */
+static int gatesptr = 4;		/* initial LSRR pointer, settable */
+static USHORT Single = 1;		/* zero if scanning */
+static unsigned int insaved = 0;	/* stdin-buffer size for multi-mode */
+static unsigned int wrote_out = 0;	/* total stdout bytes */
+static unsigned int wrote_net = 0;	/* total net bytes */
 static char wrote_txt[] = " sent %d, rcvd %d";
 static char hexnibs[20] = "0123456789abcdef  ";
 
 /* will malloc up the following globals: */
-struct timeval * timer1 = NULL;
-struct timeval * timer2 = NULL;
-SAI * lclend = NULL;		/* sockaddr_in structs */
-SAI * remend = NULL;
-HINF ** gates = NULL;		/* LSRR hop hostpoop */
-char * optbuf = NULL;		/* LSRR or sockopts */
-char * bigbuf_in;		/* data buffers */
-char * bigbuf_net;
-fd_set * ding1;			/* for select loop */
-fd_set * ding2;
-PINF * portpoop = NULL;		/* for getportpoop / getservby* */
-unsigned char * stage = NULL;	/* hexdump line buffer */
+static struct timeval * timer1 = NULL;
+static struct timeval * timer2 = NULL;
+static SAI * lclend = NULL;		/* sockaddr_in structs */
+static SAI * remend = NULL;
+static HINF ** gates = NULL;		/* LSRR hop hostpoop */
+static char * optbuf = NULL;		/* LSRR or sockopts */
+static char * bigbuf_in;		/* data buffers */
+static char * bigbuf_net;
+static fd_set * ding1;			/* for select loop */
+static fd_set * ding2;
+static PINF * portpoop = NULL;		/* for getportpoop / getservby* */
+static unsigned char * stage = NULL;	/* hexdump line buffer */
 
 #ifdef WIN32
-  char * setsockopt_c;
-int nnetfd;
+static char * setsockopt_c;
+static int nnetfd;
+static HANDLE w32_stdout;
+static CONSOLE_SCREEN_BUFFER_INFO csbi;
 #endif
 
 /* global cmd flags: */
-USHORT o_alla = 0;
-unsigned int o_interval = 0;
-USHORT o_listen = 0;
-USHORT o_nflag = 0;
-USHORT o_wfile = 0;
-USHORT o_random = 0;
-USHORT o_udpmode = 0;
-USHORT o_verbose = 0;
-unsigned int o_wait = 0;
-USHORT o_zero = 0;
+static USHORT o_alla = 0;
+static unsigned int o_interval = 0;
+static USHORT o_listen = 0;
+static USHORT o_nflag = 0;
+static USHORT o_wfile = 0;
+static USHORT o_random = 0;
+static USHORT o_udpmode = 0;
+static USHORT o_verbose = 0;
+static unsigned int o_wait = 0;
+static USHORT o_zero = 0;
+static USHORT o_esco = 0;
 
 /* Debug macro: squirt whatever to stderr and sleep a bit so we can see it go
    by.  need to call like Debug ((stuff)) [with no ; ] so macro args match!
@@ -219,7 +214,7 @@ USHORT o_zero = 0;
 /* support routines -- the bulk of this thing.  Placed in such an order that
    we don't have to forward-declare anything: */
 
-int helpme(); /* oop */
+static int helpme(); /* oop */
 
 #ifdef WIN32
 
@@ -227,7 +222,7 @@ int helpme(); /* oop */
    winsock needs to be initialized. Might as well do it as the res_init
    call for Win32 */
 
-void res_init()
+static void res_init()
 {
 WORD wVersionRequested; 
 WSADATA wsaData; 
@@ -264,62 +259,62 @@ if ( LOBYTE( wsaData.wVersion ) != 1 ||
    Windows Sockets cannot report errors through perror() so we need to define
    our own error strings to print. Someday all the string should be prettied up.
    Prettied the errors I usually get */
-char * winsockstr(error)
+static char * winsockstr(error)
 int error;
 {
 	switch (error)
 	{
-	case WSAEINTR          : return("INTR          ");
-	case WSAEBADF          : return("BADF          ");
-	case WSAEACCES         : return("ACCES         ");
-	case WSAEFAULT         : return("FAULT         ");
-	case WSAEINVAL         : return("INVAL         ");
-	case WSAEMFILE         : return("MFILE         ");
-	case WSAEWOULDBLOCK    : return("WOULDBLOCK    ");
-	case WSAEINPROGRESS    : return("INPROGRESS    ");
-	case WSAEALREADY       : return("ALREADY       ");
-	case WSAENOTSOCK       : return("NOTSOCK       ");
-	case WSAEDESTADDRREQ   : return("DESTADDRREQ   ");
-	case WSAEMSGSIZE       : return("MSGSIZE       ");
-	case WSAEPROTOTYPE     : return("PROTOTYPE     ");
-	case WSAENOPROTOOPT    : return("NOPROTOOPT    ");
+	case WSAEINTR          : return("INTR");
+	case WSAEBADF          : return("BADF");
+	case WSAEACCES         : return("ACCES");
+	case WSAEFAULT         : return("FAULT");
+	case WSAEINVAL         : return("INVAL");
+	case WSAEMFILE         : return("MFILE");
+	case WSAEWOULDBLOCK    : return("WOULDBLOCK");
+	case WSAEINPROGRESS    : return("INPROGRESS");
+	case WSAEALREADY       : return("ALREADY");
+	case WSAENOTSOCK       : return("NOTSOCK");
+	case WSAEDESTADDRREQ   : return("DESTADDRREQ");
+	case WSAEMSGSIZE       : return("MSGSIZE");
+	case WSAEPROTOTYPE     : return("PROTOTYPE");
+	case WSAENOPROTOOPT    : return("NOPROTOOPT");
 	case WSAEPROTONOSUPPORT: return("PROTONOSUPPORT");
 	case WSAESOCKTNOSUPPORT: return("SOCKTNOSUPPORT");
-	case WSAEOPNOTSUPP     : return("OPNOTSUPP     ");
-	case WSAEPFNOSUPPORT   : return("PFNOSUPPORT   ");
-	case WSAEAFNOSUPPORT   : return("AFNOSUPPORT   ");
-	case WSAEADDRINUSE     : return("ADDRINUSE     ");
-	case WSAEADDRNOTAVAIL  : return("ADDRNOTAVAIL  ");
-	case WSAENETDOWN       : return("NETDOWN       ");
-	case WSAENETUNREACH    : return("NETUNREACH    ");
-	case WSAENETRESET      : return("NETRESET      ");
-	case WSAECONNABORTED   : return("CONNABORTED   ");
-	case WSAECONNRESET     : return("CONNRESET     ");
-	case WSAENOBUFS        : return("NOBUFS        ");
-	case WSAEISCONN        : return("ISCONN        ");
-	case WSAENOTCONN       : return("NOTCONN       ");
-	case WSAESHUTDOWN      : return("SHUTDOWN      ");
-	case WSAETOOMANYREFS   : return("TOOMANYREFS   ");
-	case WSAETIMEDOUT      : return("TIMEDOUT      ");
+	case WSAEOPNOTSUPP     : return("OPNOTSUPP");
+	case WSAEPFNOSUPPORT   : return("PFNOSUPPORT");
+	case WSAEAFNOSUPPORT   : return("AFNOSUPPORT");
+	case WSAEADDRINUSE     : return("ADDRINUSE");
+	case WSAEADDRNOTAVAIL  : return("ADDRNOTAVAIL");
+	case WSAENETDOWN       : return("NETDOWN");
+	case WSAENETUNREACH    : return("NETUNREACH");
+	case WSAENETRESET      : return("NETRESET");
+	case WSAECONNABORTED   : return("CONNABORTED");
+	case WSAECONNRESET     : return("CONNRESET");
+	case WSAENOBUFS        : return("NOBUFS");
+	case WSAEISCONN        : return("ISCONN");
+	case WSAENOTCONN       : return("NOTCONN");
+	case WSAESHUTDOWN      : return("SHUTDOWN");
+	case WSAETOOMANYREFS   : return("TOOMANYREFS");
+	case WSAETIMEDOUT      : return("TIMEDOUT");
 	case WSAECONNREFUSED   : return("connection refused");
-	case WSAELOOP          : return("LOOP          ");
-	case WSAENAMETOOLONG   : return("NAMETOOLONG   ");
-	case WSAEHOSTDOWN      : return("HOSTDOWN      ");
-	case WSAEHOSTUNREACH   : return("HOSTUNREACH   ");
-	case WSAENOTEMPTY      : return("NOTEMPTY      ");
-	case WSAEPROCLIM       : return("PROCLIM       ");
-	case WSAEUSERS         : return("USERS         ");
-	case WSAEDQUOT         : return("DQUOT         ");
-	case WSAESTALE         : return("STALE         ");
-	case WSAEREMOTE        : return("REMOTE        ");
-	case WSAEDISCON        : return("DISCON        ");
-	case WSASYSNOTREADY    : return("SYSNOTREADY    ");
+	case WSAELOOP          : return("LOOP");
+	case WSAENAMETOOLONG   : return("NAMETOOLONG");
+	case WSAEHOSTDOWN      : return("HOSTDOWN");
+	case WSAEHOSTUNREACH   : return("HOSTUNREACH");
+	case WSAENOTEMPTY      : return("NOTEMPTY");
+	case WSAEPROCLIM       : return("PROCLIM");
+	case WSAEUSERS         : return("USERS ");
+	case WSAEDQUOT         : return("DQUOT");
+	case WSAESTALE         : return("STALE");
+	case WSAEREMOTE        : return("REMOTE ");
+	case WSAEDISCON        : return("DISCON");
+	case WSASYSNOTREADY    : return("SYSNOTREADY");
 	case WSAVERNOTSUPPORTED: return("VERNOTSUPPORTED");
-	case WSANOTINITIALISED : return("NOTINITIALISED ");
-	case WSAHOST_NOT_FOUND : return("HOST_NOT_FOUND ");
-	case WSATRY_AGAIN      : return("TRY_AGAIN      ");
-	case WSANO_RECOVERY    : return("NO_RECOVERY    ");
-	case WSANO_DATA        : return("NO_DATA        ");
+	case WSANOTINITIALISED : return("NOTINITIALISED");
+	case WSAHOST_NOT_FOUND : return("HOST_NOT_FOUND");
+	case WSATRY_AGAIN      : return("TRY_AGAIN");
+	case WSANO_RECOVERY    : return("NO_RECOVERY");
+	case WSANO_DATA        : return("NO_DATA");
 	default : return("unknown socket error");
 	}
 }
@@ -333,7 +328,7 @@ int error;
    fake varargs -- need to do this way because we wind up calling through
    more levels of indirection than vanilla varargs can handle, and not all
    machines have vfprintf/vsyslog/whatever!  6 params oughta be enough. */
-void holler (str, p1, p2, p3, p4, p5, p6)
+static void holler (str, p1, p2, p3, p4, p5, p6)
   char * str;
   char * p1, * p2, * p3, * p4, * p5, * p6;
 {
@@ -341,7 +336,7 @@ void holler (str, p1, p2, p3, p4, p5, p6)
     fprintf (stderr, str, p1, p2, p3, p4, p5, p6);
 #ifdef WIN32
 	if (h_errno)
-		fprintf (stderr, ": %s\n",winsockstr(h_errno));
+		fprintf (stderr, ": %s (%d:%ld)\n",winsockstr(h_errno), h_errno, GetLastError());
 #else
     if (errno) {		/* this gives funny-looking messages, but */
       perror (" ");		/* it's more portable than sys_errlist[]... */
@@ -355,7 +350,7 @@ void holler (str, p1, p2, p3, p4, p5, p6)
 
 /* bail :
    error-exit handler, callable from anywhere */
-void bail (str, p1, p2, p3, p4, p5, p6)
+static void bail (str, p1, p2, p3, p4, p5, p6)
   char * str;
   char * p1, * p2, * p3, * p4, * p5, * p6;
 {
@@ -373,7 +368,8 @@ void bail (str, p1, p2, p3, p4, p5, p6)
 
 /* catch :
    no-brainer interrupt handler */
-void catch ()
+#ifdef NTFIXTHIS
+static void catch ()
 {
   errno = 0;
    if (o_verbose > 1)		/* normally we don't care */
@@ -381,9 +377,13 @@ void catch ()
 
   bail (" punt!");
 }
+#endif
 
 /* timeout and other signal handling cruft */
-void tmtravel ()
+#ifndef WIN32
+static jmp_buf jbuf;	/* timer crud */
+static int jval = 0;	/* timer crud */
+static void tmtravel ()
 {
 #ifdef NTFIXTHIS
   signal (SIGALRM, SIG_IGN);
@@ -393,22 +393,25 @@ void tmtravel ()
     bail ("spurious timer interrupt!");
   longjmp (jbuf, jval);
 }
+#else
+# undef setjmp
+# define setjmp(x) 0
+#endif
 
-
-
-UINT theTimer;
 
 /* arm :
    set the timer.  Zero secs arg means unarm  */
+#if defined(WIN32) && !defined(DEBUG)
+# define arm(x,y) ((void)0)
+#else
 void arm (num, secs)
   unsigned int num;
   unsigned int secs;
 {
-
 #ifdef WIN32
+#ifdef DEBUG
 	HANDLE stdhnd;
 	stdhnd = GetStdHandle(STD_OUTPUT_HANDLE);
-#ifdef DEBUG
 	if (stdhnd != INVALID_HANDLE_VALUE)
 		printf("handle is %ld\n", stdhnd);
 	else
@@ -426,11 +429,12 @@ if (secs == 0) {			/* reset */
   } /* if secs */
 #endif /* WIN32 */
 } /* arm */
+#endif
 
 /* Hmalloc :
    malloc up what I want, rounded up to *4, and pre-zeroed.  Either succeeds
    or bails out on its own, so that callers don't have to worry about it. */
-char * Hmalloc (size)
+static char * Hmalloc (size)
   unsigned int size;
 {
   unsigned int s = (size + 4) & 0xfffffffc;	/* 4GB?! */
@@ -446,7 +450,7 @@ char * Hmalloc (size)
    find the next newline in a buffer; return inclusive size of that "line",
    or the entire buffer size, so the caller knows how much to then write().
    Not distinguishing \n vs \r\n for the nonce; it just works as is... */
-unsigned int findline (buf, siz)
+static unsigned int findline (buf, siz)
   char * buf;
   unsigned int siz;
 {
@@ -475,7 +479,7 @@ Debug (("findline returning whole thing: %d", siz))
    and holler about mismatches.  Perhaps gratuitous, but it can't hurt to
    point out when someone's DNS is fukt.  Returns 1 if mismatch, in case
    someone else wants to do something about it. */
-int comparehosts (poop, hp)
+static int comparehosts (poop, hp)
   HINF * poop;
   struct hostent * hp;
 {
@@ -502,7 +506,7 @@ int comparehosts (poop, hp)
    info.  The argument can be a name or [ascii] IP address; it will try its
    damndest to deal with it.  "numeric" governs whether we do any DNS at all,
    and we also check o_verbose for what's appropriate work to do. */
-HINF * gethostpoop (name, numeric)
+static HINF * gethostpoop (name, numeric)
   char * name;
   USHORT numeric;
 {
@@ -607,7 +611,7 @@ HINF * gethostpoop (name, numeric)
 	pnum to reverse-resolve something that's already a number.
    If o_nflag is on, fill in what we can but skip the getservby??? stuff.
    Might as well have consistent behavior here... */
-USHORT getportpoop (pstring, pnum)
+static USHORT getportpoop (pstring, pnum)
   char * pstring;
   unsigned int pnum;
 {
@@ -692,7 +696,7 @@ gp_finish:
 	1	to be tested
 	2	tested [which is set as we find them here]
    returns a USHORT random port, or 0 if all the t-b-t ones are used up. */
-USHORT nextport (block)
+static USHORT nextport (block)
   char * block;
 {
   register unsigned int x;
@@ -728,7 +732,7 @@ USHORT nextport (block)
 /* loadports :
    set "to be tested" indications in BLOCK, from LO to HI.  Almost too small
    to be a separate routine, but makes main() a little cleaner... */
-void loadports (block, lo, hi)
+static void loadports (block, lo, hi)
   char * block;
   USHORT lo;
   USHORT hi;
@@ -784,6 +788,33 @@ Debug (("gonna exec %s as %s...", pr00gie, p))
 #endif
 #endif /* GAPING_SECURITY_HOLE */
 
+#ifdef WIN32
+static const BYTE f_color[8] =
+{
+  0,FOREGROUND_RED, FOREGROUND_GREEN,
+  FOREGROUND_RED  | FOREGROUND_GREEN,
+  FOREGROUND_BLUE,
+  FOREGROUND_BLUE | FOREGROUND_RED,
+  FOREGROUND_BLUE | FOREGROUND_GREEN,
+  FOREGROUND_RED|FOREGROUND_GREEN|FOREGROUND_BLUE
+};
+static const BYTE b_color[8] =
+{
+  0, BACKGROUND_RED,BACKGROUND_GREEN,
+  BACKGROUND_RED  | BACKGROUND_GREEN,
+  BACKGROUND_BLUE,
+  BACKGROUND_BLUE | BACKGROUND_RED,
+  BACKGROUND_BLUE | BACKGROUND_GREEN,
+  BACKGROUND_RED|BACKGROUND_GREEN|BACKGROUND_BLUE
+};
+# ifndef COMMON_LVB_REVERSE_VIDEO
+#  define COMMON_LVB_REVERSE_VIDEO   0x4000
+# endif
+# ifndef COMMON_LVB_UNDERSCORE
+#  define COMMON_LVB_UNDERSCORE      0x8000
+# endif
+#endif
+
 /* doconnect :
    do all the socket stuff, and return an fd for one of
 	an open outbound TCP connection
@@ -791,7 +822,7 @@ Debug (("gonna exec %s as %s...", pr00gie, p))
    with appropriate socket options set up if we wanted source-routing, or
 	an unconnected TCP or UDP socket to listen on.
    Examines various global o_blah flags to figure out what-all to do. */
-int doconnect (rad, rp, lad, lp)
+static int doconnect (rad, rp, lad, lp)
   IA * rad;
   USHORT rp;
   IA * lad;
@@ -972,7 +1003,7 @@ int doconnect (rad, rp, lad, lp)
    incoming and returns an open connection *from* someplace.  If we were
    given host/port args, any connections from elsewhere are rejected.  This
    in conjunction with local-address binding should limit things nicely... */
-int dolisten (rad, rp, lad, lp)
+static int dolisten (rad, rp, lad, lp)
   IA * rad;
   USHORT rp;
   IA * lad;
@@ -1167,7 +1198,7 @@ dol_err:
    Use the time delay between writes if given, otherwise use the "tcp ping"
    trick for getting the RTT.  [I got that idea from pluvius, and warped it.]
    Return either the original fd, or clean up and return -1. */
-udptest (fd, where)
+static int udptest (fd, where)
   int fd;
   IA * where;
 {
@@ -1228,7 +1259,7 @@ D offset       -  - - - --- 16 bytes --- - - -  -     # .... ascii .....
    a partial line, so be it; we *want* that lockstep indication of who sent
    what when.  Adapted from dgaudet's original example -- but must be ripping
    *fast*, since we don't want to be too disk-bound... */
-void oprint (which, buf, n)
+static void oprint (which, buf, n)
   int which;
   char * buf;
   int n;
@@ -1241,6 +1272,7 @@ void oprint (which, buf, n)
   register unsigned char * a;	/* out asc-dump ptr */
   register int x;
   register unsigned int y;
+  unsigned long wb;
 
   if (! ofd)
     bail ("oprint called with no open fd?!");
@@ -1280,7 +1312,7 @@ void oprint (which, buf, n)
     } /* if bc < x */
 
     bc -= x;			/* fix wrt current line size */
-    sprintf (&stage[2], "%8.8x ", obc);		/* xxx: still slow? */
+    sprintf ((char*)&stage[2], "%8.8x ", obc);		/* xxx: still slow? */
     obc += x;			/* fix current offset */
     op = &stage[11];		/* where hex starts */
     a = &stage[61];		/* where ascii starts */
@@ -1303,21 +1335,25 @@ void oprint (which, buf, n)
       x--;
     } /* while x */
     *a = '\n';			/* finish the line */
+#ifndef WIN32
     x = write (ofd, stage, soc);
+#else
+	x = WriteFile((HANDLE)ofd, stage, soc, &wb, NULL) ? (int)wb : -1;
+#endif
     if (x < 0)
       bail ("ofd write err");
   } /* while bc */
 } /* oprint */
 
 #ifdef TELNET
-USHORT o_tn = 0;		/* global -t option */
+static USHORT o_tn = 0;		/* global -t option */
 
 /* atelnet :
    Answer anything that looks like telnet negotiation with don't/won't.
    This doesn't modify any data buffers, update the global output count,
    or show up in a hexdump -- it just shits into the outgoing stream.
    Idea and codebase from Mudge@l0pht.com. */
-void atelnet (buf, size)
+static void atelnet (buf, size)
   unsigned char * buf;		/* has to be unsigned here! */
   unsigned int size;
 {
@@ -1343,7 +1379,7 @@ void atelnet (buf, size)
       p++; x--;
       obuf[2] = *p;			/* copy actual option byte */
 #ifdef WIN32
-	  (void) send (netfd, obuf, 3, 0);	/* one line, or the whole buffer */
+	  (void) send (netfd, (const char*)obuf, 3, 0);	/* one line, or the whole buffer */
 #else
       (void) write (netfd, obuf, 3);
 #endif
@@ -1360,7 +1396,7 @@ notiac:
 /* readwrite :
    handle stdin/stdout/network I/O.  Bwahaha!! -- the select loop from hell.
    In this instance, return what might become our exit status. */
-int readwrite (fd)
+static int readwrite (fd)
 #ifdef WIN32
   unsigned int fd;
 #else
@@ -1368,20 +1404,20 @@ int readwrite (fd)
 #endif
 {
   register int rr;
-  register unsigned char * zp;		/* stdin buf ptr */		// changed to unsigned! [diegocr]
-  register unsigned char * np;		/* net-in buf ptr */	// changed to unsigned! [diegocr]
+  register unsigned char * zp;	/* stdin buf ptr */// changed to unsigned! [diegocr]
+  register unsigned char * np;	/* net-in buf ptr */// changed to unsigned! [diegocr]
   unsigned int rzleft;
   unsigned int rnleft;
-  USHORT netretry;		/* net-read retry counter */
   USHORT wretry;		/* net-write sanity counter */
   USHORT wfirst;		/* one-shot flag to skip first net read */
-
-#ifdef WIN32 /* (weld) WIN32 must poll because of weak stdin handling so we need a
-				short timer */
+#ifndef WIN32
+  USHORT netretry;		/* net-read retry counter */
+#else
+/* (weld) WIN32 must poll because of weak stdin handling so we need a short timer */
   struct timeval timer3;
   int istty;
   time_t start, current;
-  int foo;
+  // int foo;
 
   timer3.tv_sec = 0;
   timer3.tv_usec = 1000;
@@ -1389,14 +1425,18 @@ int readwrite (fd)
   /* save the time so we can bail when we reach timeout */
   time( &start );
 
+  zp=np=(unsigned char *) "";
 
+#if 1
   /* sets stdin and stdout to binary so no crlf translation if its a tty */
   if (!_isatty( 1 ))
 	_setmode( 1, _O_BINARY ); 
 
   if ((istty = _isatty( 0 )) == FALSE)
 	_setmode( 0, _O_BINARY ); /* (weld) I think we want to do this */
-
+#else
+# define istty 0
+#endif
 #endif
 
 /* if you don't have all this FD_* macro hair in sys/types.h, you'll have to
@@ -1406,14 +1446,14 @@ int readwrite (fd)
     holler ("Preposterous fd value %d", fd);
     return (1);
   }
+  netretry = 2;
 #endif
   FD_SET (fd, ding1);		/* global: the net is open */
-  netretry = 2;
   wfirst = 0;
   rzleft = rnleft = 0;
   if (insaved) {
     rzleft = insaved;		/* preload multi-mode fakeouts */
-    zp = bigbuf_in;
+    zp = (unsigned char*)bigbuf_in;
 
 	wfirst = 1;
     if (Single)			/* if not scanning, this is a one-off first */
@@ -1455,7 +1495,7 @@ int readwrite (fd)
 #else
 		if (errno != EINTR) {		/* might have gotten ^Zed, etc ?*/
 #endif
-		  foo = h_errno;
+		  // foo = h_errno;
 		  holler ("select fuxored");
 #ifdef WIN32
 		  shutdown(fd, 0x02);  /* Kirby */
@@ -1511,7 +1551,7 @@ int readwrite (fd)
 	  rzleft = 0;			/* can't write anymore: broken pipe */
 	} else {
 	  rnleft = rr;
-	  np = bigbuf_net;
+	  np = (unsigned char*)bigbuf_net;
 #ifdef TELNET
 	  if (o_tn)
 	    atelnet (np, rr);		/* fake out telnet stuff */
@@ -1538,7 +1578,7 @@ Debug (("got %d from the net, errno %d", rr, errno))
 	  close (0);
 	} else {
 	  rzleft = rr;
-	  zp = bigbuf_in;
+	  zp = (unsigned char*)bigbuf_in;
 /* special case for multi-mode -- we'll want to send this one buffer to every
    open TCP port or every UDP attempt, so save its size and clean up stdin */
 	  if (! Single) {		/* we might be scanning... */
@@ -1558,7 +1598,7 @@ Debug (("got %d from the net, errno %d", rr, errno))
 		  	strcat(bigbuf_in, "\n");
 			rr = strlen(bigbuf_in);
 			rzleft = rr;
-			zp = bigbuf_in;
+			zp = (unsigned char*)bigbuf_in;
 /* special case for multi-mode -- we'll want to send this one buffer to every
    open TCP port or every UDP attempt, so save its size and clean up stdin */
 			if (! Single) {		/* we might be scanning... */
@@ -1573,7 +1613,7 @@ Debug (("got %d from the net, errno %d", rr, errno))
 			close (0);
 		} else {
 			rzleft = rr;
-			zp = bigbuf_in;
+			zp = (unsigned char*)bigbuf_in;
 /* special case for multi-mode -- we'll want to send this one buffer to every
    open TCP port or every UDP attempt, so save its size and clean up stdin */
 			if (! Single) {		/* we might be scanning... */
@@ -1601,7 +1641,66 @@ shovel:
     }
     if (rnleft) {
 #ifdef WIN32
-		int ggg=rnleft;while(ggg--)if(np[ggg] > 126)np[ggg] = '.'; // [diegocr]
+	register unsigned char * ptr = np, *p2, *end = &np[rnleft];
+	while(ptr < end) {
+		if(*ptr > 0x7e) {
+			*ptr = '.';
+		}
+		++ptr;
+	}
+	if(o_esco && w32_stdout && (p2=(unsigned char *)strchr((const char *)np, 0x1b)) && p2 < end) {
+		ptr = np; int a = csbi.wAttributes;
+		do {
+			unsigned int l = p2 - ptr, c;
+			if (l) {
+				rr = write(1, ptr, l);
+				fflush(stdin);
+				if (rr > 0) {
+					if (o_wfile)
+						oprint (1, ptr, rr);	/* log the stdout */
+					wrote_out += rr;			/* global count */
+				}
+			}
+			ptr = ++p2;
+			while (1) {
+				// http://en.wikipedia.org/wiki/ANSI_escape_code
+				if (++ptr > end || *ptr == 'm') break;
+				c = atoi((const char *)ptr);
+				if (!c || 9 == c % 10) {
+					a = 0;
+				} else if (30 <= c && c <= 37) {
+					a &= ~f_color[7];
+					a |= f_color[c - 30];
+				} else if (40 <= c && c <= 47) {
+					a &= ~b_color[7];
+					a |= b_color[c - 40];
+				} else switch(c) {
+					case 1:
+					case 2:
+					case 5:   a |= FOREGROUND_INTENSITY; break;
+					case 21:
+					case 22:
+					case 25:  a &= ~FOREGROUND_INTENSITY; break;
+					// case 4://   a |= COMMON_LVB_UNDERSCORE; break;
+					// case 7:rA=a;a = csbi.wAttributes|COMMON_LVB_REVERSE_VIDEO; break;
+					// case 24://  a &= ~COMMON_LVB_UNDERSCORE; break;
+					// case 27:  a  = rA & ~COMMON_LVB_REVERSE_VIDEO; break;
+					case 4:
+					case 7:
+					case 24:
+					case 27:   a = ((a >> 4) & 15) | ((a & 15) << 4);
+				}
+				while (ptr < end && *ptr != ';' && *ptr != 'm') ++ptr;
+				if (ptr < end && *ptr == 'm') --ptr;
+			}
+			SetConsoleTextAttribute( w32_stdout, a = (a ? a : csbi.wAttributes ));
+		} while (++ptr < end && (p2 = (unsigned char *)strchr((const char *)ptr, 0x1B)) && p2 < end);
+		if(((int)(rnleft = end - ptr)) < 1) {
+			rnleft = 0;
+		} else {
+			np = ptr;
+		}
+	}
 #endif
 	rr = write (1, np, rnleft);
 	fflush(stdin);
@@ -1620,7 +1719,7 @@ Debug (("wrote %d to stdout, errno %d", rr, errno))
 	else
 	  rr = rzleft;
 #ifdef WIN32
-	rr = send (fd, zp, rr, 0);	/* one line, or the whole buffer */
+	rr = send (fd, (const char*)zp, rr, 0);	/* one line, or the whole buffer */
 #else
 	rr = write (fd, zp, rr);	/* one line, or the whole buffer */
 #endif
@@ -1656,9 +1755,31 @@ Debug (("wrote %d to net, errno %d", rr, errno))
   return (0);
 } /* readwrite */
 
+
+#ifdef WIN32
+static void __w32_shutdown(void)
+{
+	if(ofd && ofd != (int)INVALID_HANDLE_VALUE)
+	{
+		CloseHandle((HANDLE)ofd);
+	}
+	if (w32_stdout)
+	{
+		SetConsoleTextAttribute( w32_stdout, csbi.wAttributes );
+	}
+	free(lclend);
+	free(remend);
+	free(bigbuf_in);
+	free(bigbuf_net);
+	free(ding1);
+	free(ding2);
+	free(portpoop);
+}
+#endif
+
 /* main :
    now we pull it all together... */
-main (argc, argv)
+int main (argc, argv)
   int argc;
   char ** argv;
 {
@@ -1680,6 +1801,15 @@ main (argc, argv)
   USHORT curport = 0;
   char * randports = NULL;
   int cycle = 0;
+
+#ifdef WIN32
+  atexit(__w32_shutdown);
+  w32_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (w32_stdout == INVALID_HANDLE_VALUE)
+    w32_stdout = NULL;
+  else
+    GetConsoleScreenBufferInfo( w32_stdout, &csbi );
+#endif
 
 #ifdef HAVE_BIND
 /* can *you* say "cc -yaddayadda netcat.c -lresolv -l44bsd" on SunLOSs? */
@@ -1715,6 +1845,7 @@ main (argc, argv)
 
 recycle:
 
+#if 0
 /* if no args given at all, get 'em from stdin and construct an argv. */
   if (argc == 1) {
     cp = argv[0];
@@ -1756,10 +1887,11 @@ recycle:
     } /* for cp */
     argc = x;
   } /* if no args given */
+#endif
 
 /* If your shitbox doesn't have getopt, step into the nineties already. */
 /* optarg, optind = next-argv-component [i.e. flag arg]; optopt = last-char */
-   while ((x = getopt (argc, argv, "ade:g:G:hi:lLno:p:rs:tuvw:z")) != EOF) {
+   while ((x = getopt (argc, argv, "adg:G:hi:lLno:p:rs:tuvw:zx")) != EOF) {
 /* Debug (("in go: x now %c, optarg %x optind %d", x, optarg, optind)) */
     switch (x) {
       case 'a':
@@ -1851,12 +1983,15 @@ recycle:
 	timer2 = (struct timeval *) Hmalloc (sizeof (struct timeval));
 	timer1->tv_sec = o_wait;	/* we need two.  see readwrite()... */
 	break;
+      case 'x':
+	o_esco++;
       case 'z':				/* little or no data xfer */
 	o_zero++;
 	break;
       default:
 	errno = 0;
-	bail ("nc -h for help");
+	// bail ("nc -h for help");
+	helpme();
     } /* switch x */
   } /* while getopt */
 
@@ -1877,8 +2012,13 @@ recycle:
   }
 #endif /* G_S_H */
   if (o_wfile) {
-    ofd = open (stage, O_WRONLY | O_CREAT | O_TRUNC, 0664);
+#ifndef WIN32
+    ofd = open ((const char*)stage, O_WRONLY | O_CREAT | O_TRUNC, 0664);
     if (ofd <= 0)			/* must be > extant 0/1/2 */
+#else
+    ofd = (int)CreateFile((LPCSTR)stage, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(ofd == (int)INVALID_HANDLE_VALUE)
+#endif
       bail ("can't open %s", stage);
     stage = (unsigned char *) Hmalloc (100);
   }
@@ -2033,6 +2173,7 @@ Debug (("netfd %d from port %d to port %d", netfd, ourport, curport))
 #ifdef WIN32
     WSACleanup(); 
 #endif
+	free(randports);
 
   	if (cycle == 1)
 		goto recycle;
@@ -2044,17 +2185,20 @@ Debug (("netfd %d from port %d to port %d", netfd, ourport, curport))
 } /* main */
 
 #ifdef HAVE_HELP		/* unless we wanna be *really* cryptic */
+#ifndef VERSION
+# define VERSION "1.14.custom"
+#endif
 /* helpme :
    the obvious */
-int helpme()
+static int helpme()
 {
   o_verbose = 1;
-  holler ("[v1.11 NT www.rodneybeede.com/]\n\
+  holler ("NetCat for Windows v" VERSION " https://github.com/diegocr/netcat\n\
 connect to somewhere:	nc [-options] hostname port[s] [ports] ... \n\
 listen for inbound:	nc -l -p port [options] [hostname] [port]\n\
 options:");
   holler ("\
-	-d		detach from console, background mode\n");
+	-d		detach from console, background mode");
 
 #ifdef GAPING_SECURITY_HOLE	/* needs to be separate holler() */
   holler ("\
@@ -2080,13 +2224,11 @@ options:");
 	-u		UDP mode\n\
 	-v		verbose [use twice to be more verbose]\n\
 	-w secs		timeout for connects and final net reads\n\
+	-x		handle ansi escape codes\n\
 	-z		zero-I/O mode [used for scanning]");
   bail ("port numbers can be individual or ranges: m-n [inclusive]");
   return(0);
 } /* helpme */
 #endif /* HAVE_HELP */
-
-
-
 
 /* None genuine without this seal!  _H*/

@@ -16,10 +16,10 @@ Why am I creating this version, you may ask? Well, during some of my
 telnet sessions i've noticed extraneous characters being returned and
 such, so... basically, this version should fix those issues.
 
-Altogether with the code, you'll find a nc.exe executable, which was
-compiled using GCC 4.5.0 and tested under Windows 7 (HP) 32-bits
+You can also find there a nc.exe executable, which was compiled
+using GCC 4.8.1 and tested under Windows 7 (HP) 32-bits.
 
-md5sum: 243c24020d658f07521c97d3639f839c  nc.exe
+SHA1(nc.exe)= c5e19c02a9a1362c67ea87c1e049ce9056425788
 
 If you have some question, feel free to contact me.
 

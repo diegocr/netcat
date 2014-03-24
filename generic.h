@@ -32,7 +32,7 @@
 #define HAVE_FLOCK		/* otherwise it's lockf() */
 
 /* if you don't have setsid(), you might have setpgrp().
-#define HAVE_SETSID
+#define HAVE_SETSID */
 
 /* random() is generally considered better than rand() */
 /* xxx: rand48? */
@@ -44,7 +44,7 @@
 /* different kinds of term ioctls.  How to recognize them, very roughly:
    sysv/POSIX_ME_HARDER:  termio[s].h, struct termio[s], tty.c_*[]
    bsd/old stuff:  sgtty.h, ioctl(TIOCSETP), sgttyb.sg_*, tchars.t_*
-#define HAVE_TERMIOS
+#define HAVE_TERMIOS */
 
 /* dbm vs ndbm */
 #define HAVE_NDBM
@@ -130,7 +130,7 @@ There's a BIG swamp lurking where network code of any sort lives.
 /* ======================== */
 
 /* By turning OFF various bits of the above,  you can customize for
-   a given platform.  /*
+   a given platform.  */
 
 /* DOS boxes, with MSC; you may need to adapt to a different compiler. */
 #ifdef MSDOS
